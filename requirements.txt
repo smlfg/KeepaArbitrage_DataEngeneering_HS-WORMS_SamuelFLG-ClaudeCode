@@ -1,0 +1,45 @@
+# Core Framework
+fastapi>=0.109.0
+uvicorn>=0.27.0
+pydantic>=2.5.0
+
+# Keepa API client
+keepa>=1.4.0
+
+# Database
+asyncpg>=0.29.0
+sqlalchemy>=2.0.25
+aiosqlite>=0.19.0
+
+# Kafka - Event Streaming
+aiokafka>=0.10.0
+kafka-python>=2.0.2
+
+# Elasticsearch - Search & Analytics
+elasticsearch>=8.11.0
+elasticsearch-dsl>=8.11.0
+
+# API Clients
+httpx>=0.26.0
+aiohttp>=3.9.0
+
+# Email
+aiosmtplib>=3.0.0
+jinja2>=3.1.0
+
+# Utilities
+python-dotenv>=1.0.0
+python-dateutil>=2.8.0
+structlog>=24.1.0
+pydantic-settings>=2.1.0
+
+# Testing
+pytest>=7.4.0
+pytest-asyncio>=0.23.0
+pytest-cov>=4.1.0
+httpx>=0.26.0
+
+# Development
+black>=23.0.0
+isort>=5.12.0
+mypy>=1.8.0
