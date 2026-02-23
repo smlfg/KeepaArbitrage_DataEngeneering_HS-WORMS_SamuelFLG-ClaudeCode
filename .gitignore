@@ -1,0 +1,22 @@
+.env
+.venv/
+__pycache__/
+*.pyc
+.coverage
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+.claude/
+
+# Runtime artifacts & logs
+data/*_log*.txt
+data/amazon_asins_raw.*
+data/keepa_search_*
+data/keyboard_targets_*
+
+# Reports (generated at runtime)
+reports/coverage/
+reports/nightwatch/*.log
+
+# Backup files
+*.backup-*
