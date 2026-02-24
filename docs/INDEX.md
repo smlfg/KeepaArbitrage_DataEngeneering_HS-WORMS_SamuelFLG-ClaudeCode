@@ -6,7 +6,8 @@
 |----------|-------------|---------------|
 | [KEEPA_API.md](KEEPA_API.md) | Keepa API | Endpoints, CSV-Format, Token Bucket, Domain-IDs, Preis-Parsing |
 | [KEEPA_API_LEARNINGS.md](KEEPA_API_LEARNINGS.md) | Keepa API Praxis | Was funktioniert, was nicht, Fact-Check, Batch-Optimierung, Lessons Learned |
-| [ELASTICSEARCH.md](ELASTICSEARCH.md) | Elasticsearch 8.11 | Indices, Mappings, Queries, Aggregationen, Kibana |
+| [ELASTICSEARCH.md](ELASTICSEARCH.md) | Elasticsearch 8.11 | Indices, Mappings, Queries, Aggregationen |
+| [KIBANA.md](KIBANA.md) | Kibana 8.11 | Discover, KQL, Dashboards, Dev Tools, Saved Searches |
 | [DOCKER.md](DOCKER.md) | Docker Compose | Alle 8 Services, Ports, Volumes, Startup-Reihenfolge |
 | [KAFKA.md](KAFKA.md) | Apache Kafka | Topics, Producer/Consumer, Message-Formate, Consumer Groups |
 | [POSTGRESQL.md](POSTGRESQL.md) | PostgreSQL 15 | Schema, Tabellen, SQLAlchemy Models, nuetzliche Queries |

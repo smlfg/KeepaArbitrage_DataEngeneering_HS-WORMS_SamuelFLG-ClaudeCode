@@ -36,12 +36,33 @@ response=$(curl -s -w "\n%{http_code}" \
 http_code=$(echo "$response" | tail -1)
 body=$(echo "$response" | sed '$d')
 
-if [ "$http_code" = "200" ]; then
-  echo "Dashboards imported successfully!"
-  echo "$body"
-  exit 0
-else
+if [ "$http_code" != "200" ]; then
   echo "ERROR: Import failed (HTTP ${http_code})"
   echo "$body"
   exit 1
 fi
+
+echo "Dashboards imported successfully!"
+echo "$body"
+
+# Post-import: Set time ranges on dashboards.
+# Kibana's import migration strips timeFrom/timeTo attributes,
+# so we must set them via the saved_objects API after import.
+echo ""
+echo "Setting dashboard time ranges (now-30d) ..."
+
+for dashboard_id in deal-overview-dashboard price-monitor-dashboard keepa-pipeline-monitor; do
+  update_response=$(curl -s -o /dev/null -w "%{http_code}" \
+    -X PUT "${KIBANA_URL}/api/saved_objects/dashboard/${dashboard_id}" \
+    -H "kbn-xsrf: true" \
+    -H "Content-Type: application/json" \
+    -d '{"attributes": {"timeFrom": "now-30d", "timeTo": "now"}}')
+  if [ "$update_response" = "200" ]; then
+    echo "  ${dashboard_id}: timeFrom=now-30d timeTo=now"
+  else
+    echo "  ${dashboard_id}: WARNING — HTTP ${update_response} (time range not set)"
+  fi
+done
+
+echo "Setup complete."
+exit 0

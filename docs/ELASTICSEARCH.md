@@ -271,16 +271,8 @@ kibana:
 
 ### Kibana einrichten
 
-1. **Data View erstellen:** Management → Data Views → Create
-   - Name: `keeper-deals`
-   - Index pattern: `keeper-deals`
-   - Timestamp field: `timestamp`
-2. Repeat fuer `keeper-prices`
-3. **Dashboard bauen:**
-   - Line Chart: Preisverlauf (X=timestamp, Y=avg(current_price), Split=asin)
-   - Bar Chart: Deals nach Rabatt (X=discount_percent, Y=count)
-   - Table: Top Deals (sortiert nach deal_score desc)
-   - Metric: Durchschnittlicher Rabatt (avg(discount_percent))
+Data Views und Dashboards werden automatisch per `kibana/setup-kibana.sh` importiert.
+Alles Weitere: **[KIBANA.md](KIBANA.md)** — Discover, KQL-Queries, Dashboard-Guide, Dev Tools.
 
 ---
 
