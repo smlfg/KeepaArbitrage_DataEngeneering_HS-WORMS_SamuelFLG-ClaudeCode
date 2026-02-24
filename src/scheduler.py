@@ -33,6 +33,14 @@ from src.services.database import async_session_maker
 from src.agents.alert_dispatcher import alert_dispatcher
 from src.agents.deal_finder import deal_finder
 from src.config import get_settings
+from src.services.layout_detection import (
+    detect_layout,
+    classify_mismatch,
+    EXPECTED_LAYOUT,
+    DOMAINS as LAYOUT_DOMAINS,
+    FALLBACK_KEYBOARD_CATEGORIES,
+)
+from src.services.keepa_client import KeepaClient
 
 try:
     from src.utils.pipeline_logger import log_arbitrage
@@ -119,6 +127,15 @@ class PriceMonitorScheduler:
         "havit",
         "iclever",
     ]
+
+    # Search terms per market for ASIN discovery
+    DISCOVERY_SEARCH_TERMS = {
+        "DE": ["tastatur", "mechanische tastatur", "gaming keyboard", "qwertz tastatur", "kabellose tastatur"],
+        "UK": ["keyboard", "mechanical keyboard", "gaming keyboard", "wireless keyboard"],
+        "FR": ["clavier", "clavier mecanique", "clavier gaming", "clavier sans fil"],
+        "IT": ["tastiera", "tastiera meccanica", "tastiera gaming", "tastiera wireless"],
+        "ES": ["teclado", "teclado mecanico", "teclado gaming", "teclado inalambrico"],
+    }
 
     def __init__(
         self,
@@ -253,9 +270,15 @@ class PriceMonitorScheduler:
 
         self.running = True
         cycle_count = 0
+        elapsed_seconds = 0
 
         # Phase 4: Launch background deal collector after all services ready
         asyncio.create_task(self.collect_deals_to_elasticsearch())
+
+        # Phase 5: Launch ASIN discovery if enabled
+        if self.settings.discovery_enabled:
+            asyncio.create_task(self.run_asin_discovery())
+            logger.info("ASIN discovery pipeline launched")
 
         while self.running:
             try:
@@ -263,9 +286,11 @@ class PriceMonitorScheduler:
             except Exception as e:
                 logger.error(f"Error in price check loop: {e}")
 
-            # Run daily deal reports once per day (every 4th cycle at 6h intervals)
+            # Run daily deal reports once per day (time-based, not cycle-based)
             cycle_count += 1
-            if cycle_count % 4 == 0:
+            elapsed_seconds += self.check_interval
+            if elapsed_seconds >= 86400:
+                elapsed_seconds = 0
                 try:
                     await self.run_daily_deal_reports()
                 except Exception as e:
@@ -800,6 +825,222 @@ class PriceMonitorScheduler:
 
             interval = max(30, int(self.settings.deal_scan_interval_seconds or 300))
             await asyncio.sleep(interval)
+
+    # ===== ASIN Discovery Pipeline =====
+
+    def _load_existing_asins_from_csv(self) -> set:
+        """Load already-discovered ASINs from the targets CSV to avoid duplicates."""
+        from pathlib import Path
+        import csv as csv_mod
+
+        csv_path = Path(__file__).resolve().parent.parent / "data" / "discovered_asins.csv"
+        if not csv_path.exists():
+            return set()
+
+        existing = set()
+        with open(csv_path, encoding="utf-8") as f:
+            reader = csv_mod.DictReader(f)
+            for row in reader:
+                asin = row.get("asin", "").strip().upper()
+                if asin:
+                    existing.add(asin)
+        return existing
+
+    def _append_discovered_asins(self, new_asins: list, existing: set) -> int:
+        """Append newly discovered ASINs to discovered_asins.csv. Returns count appended."""
+        from pathlib import Path
+        import csv as csv_mod
+
+        csv_path = Path(__file__).resolve().parent.parent / "data" / "discovered_asins.csv"
+        write_header = not csv_path.exists()
+
+        fieldnames = [
+            "asin", "market", "domain_id", "title", "detected_layout",
+            "expected_layout", "is_mismatch", "confidence", "detection_layer",
+            "discovery_strategy", "discovered_at",
+        ]
+
+        appended = 0
+        with open(csv_path, "a", newline="", encoding="utf-8") as f:
+            writer = csv_mod.DictWriter(f, fieldnames=fieldnames)
+            if write_header:
+                writer.writeheader()
+            for entry in new_asins:
+                asin = entry.get("asin", "").upper()
+                if asin and asin not in existing:
+                    writer.writerow(entry)
+                    existing.add(asin)
+                    appended += 1
+
+        return appended
+
+    def _get_discovery_search_terms(self) -> list:
+        """Flatten all discovery search terms into (market, domain_id, term) tuples."""
+        terms = []
+        for market, term_list in self.DISCOVERY_SEARCH_TERMS.items():
+            domain_id = LAYOUT_DOMAINS.get(market, 3)
+            for term in term_list:
+                terms.append((market, domain_id, term))
+        return terms
+
+    async def run_asin_discovery(self):
+        """
+        Continuous ASIN discovery pipeline.
+        Rotates through search/bestseller/product_finder strategies
+        across 5 EU markets. Appends new ASINs with layout detection to CSV.
+        Uses a separate light KeepaClient (httpx, ~5-10 tokens/call).
+        """
+        logger.info("ASIN discovery pipeline started")
+        logger.info(
+            "Discovery config: interval=%ss, token_reserve=%s",
+            self.settings.discovery_interval_seconds,
+            self.settings.discovery_token_reserve,
+        )
+
+        light_client = KeepaClient()
+        search_terms = self._get_discovery_search_terms()
+        strategies = cycle(["search", "bestsellers", "product_finder"])
+        term_idx = 0
+        discovery_cycle = 0
+
+        while self.running:
+            try:
+                existing = self._load_existing_asins_from_csv()
+                strategy = next(strategies)
+                market, domain_id, term = search_terms[term_idx % len(search_terms)]
+                term_idx += 1
+
+                # Token budget check before each call
+                if light_client.rate_limit_remaining < self.settings.discovery_token_reserve:
+                    reset_ms = light_client.rate_limit_reset or 15000
+                    wait_s = min(max(reset_ms / 1000, 10), 120)
+                    logger.info(
+                        "Discovery: tokens low (%s), pausing %ss",
+                        light_client.rate_limit_remaining,
+                        int(wait_s),
+                    )
+                    await asyncio.sleep(wait_s)
+                    continue
+
+                raw_asins = []
+
+                if strategy == "search":
+                    try:
+                        response = await light_client.search_products(
+                            search_term=term,
+                            domain_id=domain_id,
+                        )
+                        products = response.get("products", [])
+                        if isinstance(products, list):
+                            raw_asins = products
+                    except Exception as e:
+                        logger.debug("Discovery search error: %s", e)
+
+                elif strategy == "bestsellers":
+                    try:
+                        cat_id = FALLBACK_KEYBOARD_CATEGORIES.get(market, 340843031)
+                        response = await light_client.get_bestsellers(
+                            domain_id=domain_id,
+                            category=cat_id,
+                        )
+                        asin_list = response.get("bestSellersList", {})
+                        if isinstance(asin_list, dict):
+                            for asins in asin_list.values():
+                                if isinstance(asins, list):
+                                    raw_asins.extend(
+                                        [{"asin": a} for a in asins if isinstance(a, str)]
+                                    )
+                        elif isinstance(asin_list, list):
+                            raw_asins = [{"asin": a} for a in asin_list if isinstance(a, str)]
+                    except Exception as e:
+                        logger.debug("Discovery bestsellers error: %s", e)
+
+                elif strategy == "product_finder":
+                    try:
+                        cat_id = FALLBACK_KEYBOARD_CATEGORIES.get(market, 340843031)
+                        response = await light_client.product_finder(
+                            domain_id=domain_id,
+                            product_parms={
+                                "rootCategory": cat_id,
+                                "minPrice": 800,
+                                "maxPrice": 80000,
+                            },
+                        )
+                        asin_list = response.get("asinList", [])
+                        if isinstance(asin_list, list):
+                            raw_asins = [{"asin": a} for a in asin_list if isinstance(a, str)]
+                    except Exception as e:
+                        logger.debug("Discovery product_finder error: %s", e)
+
+                # Process discovered ASINs through layout detection
+                new_entries = []
+                for item in raw_asins:
+                    asin = ""
+                    if isinstance(item, dict):
+                        asin = item.get("asin", "").upper()
+                    elif isinstance(item, str):
+                        asin = item.upper()
+
+                    if not asin or len(asin) != 10 or asin in existing:
+                        continue
+
+                    # Build entry for layout detection
+                    entry = {
+                        "title": item.get("title", "") if isinstance(item, dict) else "",
+                        "brand": item.get("brand", "") if isinstance(item, dict) else "",
+                        "ean": "",
+                        "present_markets": {market},
+                    }
+
+                    detection = detect_layout(entry)
+                    expected = EXPECTED_LAYOUT.get(market, "")
+                    is_mismatch, _ = classify_mismatch(
+                        detection["detected_layout"], market
+                    )
+
+                    new_entries.append({
+                        "asin": asin,
+                        "market": market,
+                        "domain_id": domain_id,
+                        "title": entry["title"][:200],
+                        "detected_layout": detection["detected_layout"],
+                        "expected_layout": expected,
+                        "is_mismatch": is_mismatch,
+                        "confidence": detection["confidence"],
+                        "detection_layer": detection["detection_layer"],
+                        "discovery_strategy": strategy,
+                        "discovered_at": datetime.utcnow().isoformat(),
+                    })
+
+                if new_entries:
+                    appended = self._append_discovered_asins(new_entries, existing)
+                    if appended > 0:
+                        logger.info(
+                            "Discovery #%d [%s/%s/%s]: +%d new ASINs (total: %d)",
+                            discovery_cycle + 1,
+                            strategy,
+                            market,
+                            term[:20],
+                            appended,
+                            len(existing),
+                        )
+                else:
+                    logger.debug(
+                        "Discovery #%d [%s/%s/%s]: no new ASINs",
+                        discovery_cycle + 1,
+                        strategy,
+                        market,
+                        term[:20],
+                    )
+
+                discovery_cycle += 1
+
+            except Exception as e:
+                logger.warning("Discovery pipeline error: %s", e)
+
+            await asyncio.sleep(
+                max(30, self.settings.discovery_interval_seconds)
+            )
 
     async def async_stop(self):
         """Gracefully stop all services in reverse startup order"""

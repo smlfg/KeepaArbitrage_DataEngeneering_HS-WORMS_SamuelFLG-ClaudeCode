@@ -33,6 +33,11 @@ class Settings(BaseSettings):
     deal_scan_interval_seconds: int = 3600
     deal_scan_batch_size: int = 10
 
+    # Discovery Settings (continuous ASIN discovery pipeline)
+    discovery_enabled: bool = True
+    discovery_interval_seconds: int = 1800       # 30 min between discovery cycles
+    discovery_token_reserve: int = 50            # Min token reserve for price checks
+
     database_url: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/keeper"
 
     # Kafka Configuration
