@@ -3,6 +3,7 @@ Keepa API Client
 Handles all interactions with Keepa API
 """
 
+import asyncio
 import hashlib
 import logging
 import time
@@ -117,10 +118,21 @@ class KeepaClient:
         self, endpoint: str, params: dict, timeout: float = 30.0, method: str = "GET"
     ) -> dict:
         """
-        Make API request with retry logic
+        Make API request with token-aware rate limiting.
+        Waits for token refill when budget is low before sending request.
         Uses query parameter authentication (key=...)
         """
         url = f"{KEEPA_API_BASE}/{endpoint}"
+
+        # Token-aware pre-check: wait if tokens are low
+        if self.rate_limit_remaining < 10 and self.rate_limit_reset:
+            wait_ms = max(self.rate_limit_reset, 1000)
+            wait_s = min(wait_ms / 1000, 60)  # Cap at 60s
+            logger.info(
+                f"Token budget low ({self.rate_limit_remaining}), "
+                f"waiting {wait_s:.0f}s for refill..."
+            )
+            await asyncio.sleep(wait_s)
 
         async with httpx.AsyncClient(timeout=timeout) as client:
             if method == "POST":
@@ -141,7 +153,14 @@ class KeepaClient:
                 raise KeepaAuthError("Invalid Keepa API key")
 
             elif response.status_code == 429:
-                raise KeepaRateLimitError("Keepa API rate limit exceeded")
+                # Read reset time from response and update state
+                reset_ms = int(response.headers.get("X-RateLimit-Reset", 15000))
+                self.rate_limit_remaining = 0
+                self.rate_limit_reset = reset_ms
+                raise KeepaRateLimitError(
+                    f"Rate limit exceeded. Reset in {reset_ms}ms. "
+                    f"Remaining: {self.rate_limit_remaining}"
+                )
 
             elif response.status_code == 404:
                 raise NoDealAccessError(
@@ -158,8 +177,8 @@ class KeepaClient:
                 )
 
     @retry(
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=30, max=120),
+        stop=stop_after_attempt(5),
+        wait=wait_exponential(multiplier=2, min=15, max=90),
         retry=retry_if_exception_type((KeepaRateLimitError, KeepaTimeoutError)),
     )
     async def search_products(
@@ -218,8 +237,8 @@ class KeepaClient:
             raise KeepaApiError(f"Search failed: {str(e)}")
 
     @retry(
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=30, max=120),
+        stop=stop_after_attempt(5),
+        wait=wait_exponential(multiplier=2, min=15, max=90),
         retry=retry_if_exception_type((KeepaRateLimitError, KeepaTimeoutError)),
     )
     async def get_products(
@@ -264,8 +283,8 @@ class KeepaClient:
             raise KeepaApiError(f"Product fetch failed: {str(e)}")
 
     @retry(
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=30, max=120),
+        stop=stop_after_attempt(5),
+        wait=wait_exponential(multiplier=2, min=15, max=90),
         retry=retry_if_exception_type((KeepaRateLimitError, KeepaTimeoutError)),
     )
     async def get_bestsellers(
@@ -314,8 +333,8 @@ class KeepaClient:
             raise KeepaApiError(f"Bestsellers fetch failed: {str(e)}")
 
     @retry(
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=30, max=120),
+        stop=stop_after_attempt(5),
+        wait=wait_exponential(multiplier=2, min=15, max=90),
         retry=retry_if_exception_type((KeepaRateLimitError, KeepaTimeoutError)),
     )
     async def search_categories(
@@ -344,8 +363,8 @@ class KeepaClient:
         return response
 
     @retry(
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=30, max=120),
+        stop=stop_after_attempt(5),
+        wait=wait_exponential(multiplier=2, min=15, max=90),
         retry=retry_if_exception_type((KeepaRateLimitError, KeepaTimeoutError)),
     )
     async def product_finder(

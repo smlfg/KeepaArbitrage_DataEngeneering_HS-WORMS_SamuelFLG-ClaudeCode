@@ -146,7 +146,13 @@ async def discover_categories(client: KeepaClient) -> dict:
                 domain_id, []
             )
 
-        await asyncio.sleep(1)
+        # Token-aware pause between markets
+        remaining = getattr(client, 'rate_limit_remaining', 100)
+        if remaining < 10:
+            log.info(f"  Tokens low ({remaining}), waiting 30s...")
+            await asyncio.sleep(30)
+        else:
+            await asyncio.sleep(2)
 
     return categories_by_domain
 
@@ -187,10 +193,19 @@ async def discover_bestsellers(
                 )
             except Exception as e:
                 log.warning(f"  {market} cat={cat_id}: Bestseller fetch failed: {e}")
+                if "rate limit" in str(e).lower():
+                    log.info("    Rate limited — extra 30s pause")
+                    await asyncio.sleep(30)
 
-            await asyncio.sleep(2)
+            # Token-aware pause between categories
+            remaining = getattr(client, 'rate_limit_remaining', 100)
+            if remaining < 10:
+                log.info(f"  Tokens low ({remaining}), waiting 30s...")
+                await asyncio.sleep(30)
+            else:
+                await asyncio.sleep(2)
 
-        await asyncio.sleep(3)
+        await asyncio.sleep(5)  # More breathing room between markets
 
     return discovered
 
@@ -236,8 +251,17 @@ async def discover_product_finder(
             )
         except Exception as e:
             log.warning(f"  {market}: Product Finder failed: {e}")
+            if "rate limit" in str(e).lower():
+                log.info("    Rate limited — extra 30s pause")
+                await asyncio.sleep(30)
 
-        await asyncio.sleep(3)
+        # Token-aware pause between markets
+        remaining = getattr(client, 'rate_limit_remaining', 100)
+        if remaining < 10:
+            log.info(f"  Tokens low ({remaining}), waiting 30s...")
+            await asyncio.sleep(30)
+        else:
+            await asyncio.sleep(3)
 
     return discovered
 
