@@ -258,6 +258,44 @@ class KeepaAPIClient:
         "seller": 5,  # Seller query
     }
 
+    _es_service_ref = None
+
+    @classmethod
+    def _get_es_service(cls):
+        if cls._es_service_ref is None:
+            try:
+                from src.services.elasticsearch_service import es_service
+                cls._es_service_ref = es_service
+            except Exception:
+                pass
+        return cls._es_service_ref
+
+    async def _log_token_metric(self, operation: str, tokens_consumed: int,
+                                 response_time_ms: float, domain: str = "",
+                                 asin_count: int = 0, success: bool = True,
+                                 error: str = ""):
+        es = self._get_es_service()
+        if not es:
+            return
+        tokens_left = self._get_tokens_left()
+        metric = {
+            "timestamp": datetime.utcnow().isoformat(),
+            "operation": operation,
+            "tokens_consumed": tokens_consumed,
+            "tokens_left": tokens_left if tokens_left is not None else 0,
+            "refill_rate": self._token_bucket.tokens_per_minute,
+            "refill_in": int(self._token_bucket.refill_interval - (time.time() - self._token_bucket.last_refill)),
+            "response_time_ms": int(response_time_ms),
+            "asin_count": asin_count,
+            "domain": domain,
+            "success": success,
+            "error": error,
+        }
+        try:
+            await es.index_token_metric(metric)
+        except Exception:
+            pass
+
     def __init__(self, api_key: Optional[str] = None):
         """
         Initialize Keepa API client with async token management.
@@ -510,6 +548,12 @@ class KeepaAPIClient:
             # Sync token bucket with real Keepa API status
             await self.update_token_status()
 
+            # Log token metric to ES
+            await self._log_token_metric(
+                "query", cost, _elapsed_ms,
+                domain=domain, asin_count=1,
+            )
+
             if not products:
                 raise KeepaAPIError(f"No product found for ASIN: {asin}")
 
@@ -730,10 +774,16 @@ class KeepaAPIClient:
                 deal_params["priceTypes"] = filters.price_types
 
             # Call deals API (with retry + 60s timeout)
+            _t0 = time.time()
             result = await self._api_call_with_retry(
                 lambda: self._api.deals(
                     deal_params, domain=self.DOMAIN_MAP.get(filters.domain_id, "DE")
                 )
+            )
+            _elapsed_ms = (time.time() - _t0) * 1000
+            await self._log_token_metric(
+                "deals", cost, _elapsed_ms,
+                domain=self.DOMAIN_MAP.get(filters.domain_id, "DE"),
             )
 
             # Parse deals — Keepa returns deals in 'dr' key
@@ -844,9 +894,12 @@ class KeepaAPIClient:
         logger.info(f"Total tokens consumed this session: {self.total_tokens_consumed}")
 
         try:
+            _t0 = time.time()
             products = await self._api_call_with_retry(
                 lambda: self._api.query(asin, domain=self.DOMAIN_MAP[3])
             )
+            _elapsed_ms = (time.time() - _t0) * 1000
+            await self._log_token_metric("query", cost, _elapsed_ms, domain="DE", asin_count=1)
 
             if not products:
                 return []

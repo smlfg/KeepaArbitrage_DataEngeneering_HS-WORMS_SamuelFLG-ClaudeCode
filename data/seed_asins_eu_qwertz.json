@@ -47,5 +47,15 @@
     "discovered_unique_total": 0
   },
   "asins": [],
-  "records": []
+  "records": [],
+  "all_asins": [
+    "CATEGORYID",
+    "LASTUPDATE"
+  ],
+  "_last_discovery": "2026-02-25T19:26:20.392283+00:00",
+  "_discovery_stats": {
+    "bestseller_count": 20,
+    "finder_count": 0,
+    "new_unique": 0
+  }
 }

@@ -109,10 +109,47 @@ class KeepaClient:
         self.api_key_hash = self._hash_api_key(self.api_key)
         self.rate_limit_remaining: int = 100
         self.rate_limit_reset: Optional[int] = None
+        self._es_service = None
 
     def _hash_api_key(self, key: str) -> str:
         """Hash API key for logging (security)"""
         return hashlib.sha256(key.encode()).hexdigest()[:16]
+
+    def _get_es_service(self):
+        """Lazy-load ES service to avoid circular imports."""
+        if self._es_service is None:
+            try:
+                from src.services.elasticsearch_service import es_service
+                self._es_service = es_service
+            except Exception:
+                pass
+        return self._es_service
+
+    async def _log_token_metric(self, response: dict, endpoint: str,
+                                 response_time_ms: int, domain: str = "",
+                                 asin_count: int = 0, success: bool = True,
+                                 error: str = ""):
+        """Write token metric to ES after each API call."""
+        es = self._get_es_service()
+        if not es:
+            return
+        metric = {
+            "timestamp": datetime.utcnow().isoformat(),
+            "operation": endpoint,
+            "tokens_consumed": response.get("tokensConsumed", 0),
+            "tokens_left": response.get("tokensLeft", self.rate_limit_remaining),
+            "refill_rate": response.get("refillRate", 0),
+            "refill_in": response.get("refillIn", 0),
+            "response_time_ms": response_time_ms,
+            "asin_count": asin_count,
+            "domain": domain,
+            "success": success,
+            "error": error,
+        }
+        try:
+            await es.index_token_metric(metric)
+        except Exception:
+            pass
 
     async def _make_request(
         self, endpoint: str, params: dict, timeout: float = 30.0, method: str = "GET"
@@ -218,6 +255,8 @@ class KeepaClient:
 
             execution_time = int((time.time() - start_time) * 1000)
 
+            await self._log_token_metric(response, "search", execution_time)
+
             return {
                 "raw": response,
                 "metadata": {
@@ -257,6 +296,7 @@ class KeepaClient:
             Parsed product response
         """
         params = {"key": self.api_key, "domain": domain_id, "asin": ",".join(asins)}
+        domain_names = {1: "US", 2: "UK", 3: "DE", 4: "FR", 8: "IT", 9: "ES", 14: "NL"}
 
         start_time = time.time()
 
@@ -264,6 +304,12 @@ class KeepaClient:
             response = await self._make_request("product", params)
 
             execution_time = int((time.time() - start_time) * 1000)
+
+            await self._log_token_metric(
+                response, "query", execution_time,
+                domain=domain_names.get(domain_id, str(domain_id)),
+                asin_count=len(asins),
+            )
 
             return {
                 "raw": response,
@@ -310,11 +356,19 @@ class KeepaClient:
 
         start_time = time.time()
 
+        domain_names = {1: "US", 2: "UK", 3: "DE", 4: "FR", 8: "IT", 9: "ES", 14: "NL"}
+
         try:
             response = await self._make_request("bestsellers", params)
             execution_time = int((time.time() - start_time) * 1000)
 
             asin_list = response.get("bestSellersList") or []
+
+            await self._log_token_metric(
+                response, "bestsellers", execution_time,
+                domain=domain_names.get(domain_id, str(domain_id)),
+                asin_count=len(asin_list),
+            )
 
             return {
                 "raw": response,
@@ -392,11 +446,19 @@ class KeepaClient:
 
         start_time = time.time()
 
+        domain_names = {1: "US", 2: "UK", 3: "DE", 4: "FR", 8: "IT", 9: "ES", 14: "NL"}
+
         try:
             response = await self._make_request("query", params, method="POST")
             execution_time = int((time.time() - start_time) * 1000)
 
             asin_list = response.get("asinList") or []
+
+            await self._log_token_metric(
+                response, "product_finder", execution_time,
+                domain=domain_names.get(domain_id, str(domain_id)),
+                asin_count=len(asin_list),
+            )
 
             return {
                 "raw": response,
@@ -447,11 +509,16 @@ class KeepaClient:
         if price_types:
             params["priceTypes"] = ",".join(str(p) for p in price_types)
 
+        start_time = time.time()
         try:
             response = await self._make_request("deals", params)
+            execution_time = int((time.time() - start_time) * 1000)
             domain_name = domain_names.get(domain_id, str(domain_id))
             tokens = response.get("tokensConsumed", 0)
             logger.debug(f"Keepa API tokens consumed for {domain_name}: {tokens}")
+            await self._log_token_metric(
+                response, "deals", execution_time, domain=domain_name,
+            )
             items = (
                 response if isinstance(response, list) else response.get("deals", [])
             )
@@ -546,6 +613,10 @@ class KeepaClient:
 
             logger.debug(
                 f"Keepa /product {domain_name}: {len(asins)} ASINs, {tokens} tokens"
+            )
+            await self._log_token_metric(
+                response, "query", response_time_ms,
+                domain=domain_name, asin_count=len(asins),
             )
 
             products = response.get("products", [])

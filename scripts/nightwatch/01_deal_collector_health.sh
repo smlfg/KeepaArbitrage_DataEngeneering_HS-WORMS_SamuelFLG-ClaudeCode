@@ -8,7 +8,7 @@ cd "$PROJECT_DIR" || exit 1
 echo "=== $(date '+%Y-%m-%d %H:%M:%S') === DEAL COLLECTOR HEALTH ==="
 
 # Check if app container is running
-APP_STATUS=$(docker-compose ps --format json app 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('State','unknown'))" 2>/dev/null || echo "unknown")
+APP_STATUS=$(docker-compose ps app 2>/dev/null | grep -qi "up\|running" && echo "running" || echo "down")
 echo "App Container: $APP_STATUS"
 
 # Check recent logs for deal collector activity
@@ -16,7 +16,8 @@ echo "--- Letzte Deal Collector Logs (5 Min) ---"
 docker-compose logs --since 5m app 2>/dev/null | grep -i "deal collect" | tail -5
 
 # Check for errors
-ERROR_COUNT=$(docker-compose logs --since 30m app 2>/dev/null | grep -ci "error\|exception\|traceback" || echo 0)
+ERROR_COUNT=$(docker-compose logs --since 30m app 2>/dev/null | grep -ci "error\|exception\|traceback" || true)
+ERROR_COUNT=${ERROR_COUNT:-0}
 echo "Errors (letzte 30 Min): $ERROR_COUNT"
 
 # Check if new deals were collected

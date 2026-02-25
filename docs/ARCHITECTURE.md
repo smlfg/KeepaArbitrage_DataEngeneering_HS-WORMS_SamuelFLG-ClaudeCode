@@ -34,13 +34,13 @@
 │                   │                  │      │                  │    │
 │                   │ - watches        │      │ - keeper-prices  │    │
 │                   │ - price_history  │      │ - keeper-deals   │    │
-│                   │ - collected_deals│      │                  │    │
+│                   │ - collected_deals│      │ - keeper-metrics │    │
 │                   └──────────────────┘      └────────┬─────────┘    │
 │                                                       │              │
 │                                              ┌────────▼─────────┐    │
 │                                              │     KIBANA        │    │
 │                                              │   (Port 5601)     │    │
-│                                              │  Dashboards +     │    │
+│                                              │  4 Dashboards +   │    │
 │                                              │  Visualisierung   │    │
 │                                              └──────────────────┘    │
 │                                                                      │
@@ -104,7 +104,7 @@
 
 | Was wir **nicht** gemacht haben | Warum |
 |--------------------------------|-------|
-| **Kein Redis-Cache** | Keepa API hat eigenes Rate Limiting (Token Bucket im Code). Cache würde Komplexität erhöhen ohne proportionalen Nutzen für unser Intervall (6h). |
+| **Kein Redis-Cache** | Keepa API hat eigenes Rate Limiting (Token Bucket im Code). Cache würde Komplexität erhöhen ohne proportionalen Nutzen für unser Intervall (6h). Token-Verbrauch wird in `keeper-metrics` ES-Index geloggt (Observability). |
 | **Kein Multi-Broker Kafka Cluster** | Single-Broker reicht für unser Datenvolumen (~100 Nachrichten/Zyklus). Cluster-Skalierung ist vorbereitet (Compose-Konfiguration erweiterbar). |
 | **Kein Elasticsearch-Cluster** | Single-Node für Development/Demo. Production würde 3+ Nodes mit Replicas brauchen — `discovery.type=single-node` bewusst gesetzt. |
 | **Keine Echtzeit-Alerts** | Periodisches Monitoring (6h-Intervall) statt WebSocket-Push. Begründung: Keepa API hat Token-Limits, Echtzeit wäre zu teuer. |
@@ -130,6 +130,8 @@
 > **Antwort:** Wir haben einen Token-Bucket-Algorithmus implementiert (`src/services/keepa_api.py`). Keepa gibt mit jeder Response die verbleibenden Tokens zurück. Unser Client wartet automatisch, wenn Tokens unter den Schwellwert fallen. Zusätzlich limitiert der Scheduler die Batch-Größe (`DEAL_SCAN_BATCH_SIZE`) und das Intervall (`DEAL_SCAN_INTERVAL_SECONDS`).
 >
 > Parallele Requests werden mit `asyncio.gather()` mit Semaphore begrenzt, um nicht mehr als N gleichzeitige Connections zu öffnen.
+>
+> Seit Feb 25 loggen beide Clients (`keepa_api.py` + `keepa_client.py`) nach jedem API-Call ein Metrik-Dokument in den `keeper-metrics` ES-Index — sichtbar im Kibana "Token Budget" Dashboard. Der Scheduler nutzt `_ensure_connections()` als Lazy Reconnect, damit ein fehlgeschlagener Startup nicht die gesamte Pipeline dauerhaft deaktiviert.
 
 ### F4: „Warum kein Echtzeit-System?"
 

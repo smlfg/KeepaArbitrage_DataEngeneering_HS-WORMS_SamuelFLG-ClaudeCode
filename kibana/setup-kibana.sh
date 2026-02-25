@@ -51,7 +51,7 @@ echo "$body"
 echo ""
 echo "Setting dashboard time ranges (now-30d) ..."
 
-for dashboard_id in deal-overview-dashboard price-monitor-dashboard keepa-pipeline-monitor; do
+for dashboard_id in deal-overview-dashboard price-monitor-dashboard keepa-pipeline-monitor token-budget-dashboard; do
   update_response=$(curl -s -o /dev/null -w "%{http_code}" \
     -X PUT "${KIBANA_URL}/api/saved_objects/dashboard/${dashboard_id}" \
     -H "kbn-xsrf: true" \

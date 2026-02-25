@@ -90,11 +90,35 @@ DEAL_INDEX_MAPPING = {
 }
 
 
+METRICS_INDEX_MAPPING = {
+    "mappings": {
+        "properties": {
+            "timestamp": {"type": "date"},
+            "operation": {"type": "keyword"},
+            "tokens_consumed": {"type": "integer"},
+            "tokens_left": {"type": "integer"},
+            "refill_rate": {"type": "integer"},
+            "refill_in": {"type": "integer"},
+            "response_time_ms": {"type": "integer"},
+            "asin_count": {"type": "integer"},
+            "domain": {"type": "keyword"},
+            "success": {"type": "boolean"},
+            "error": {"type": "text"},
+        }
+    },
+    "settings": {
+        "number_of_shards": 1,
+        "number_of_replicas": 0,
+    },
+}
+
+
 class ElasticsearchService:
     def __init__(self):
         self.client: Optional[AsyncElasticsearch] = None
         self.prices_index = settings.elasticsearch_index_prices
         self.deals_index = settings.elasticsearch_index_deals
+        self.metrics_index = "keeper-metrics"
 
     async def connect(self):
         self.client = AsyncElasticsearch([settings.elasticsearch_url])
@@ -113,6 +137,7 @@ class ElasticsearchService:
         for index_name, mapping in [
             (self.prices_index, PRICE_INDEX_MAPPING),
             (self.deals_index, DEAL_INDEX_MAPPING),
+            (self.metrics_index, METRICS_INDEX_MAPPING),
         ]:
             try:
                 if not await self.client.indices.exists(index=index_name):
@@ -149,6 +174,18 @@ class ElasticsearchService:
         if not self.client:
             return False
         return await self._index_with_retry(self.deals_index, deal_data)
+
+    async def index_token_metric(self, metric: Dict[str, Any]) -> bool:
+        if not self.client:
+            return False
+        if "timestamp" not in metric:
+            metric["timestamp"] = datetime.utcnow().isoformat()
+        try:
+            await self.client.index(index=self.metrics_index, document=metric)
+            return True
+        except Exception as e:
+            logger.debug(f"Token metric index failed: {e}")
+            return False
 
     async def search_prices(
         self,

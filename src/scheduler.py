@@ -281,6 +281,9 @@ class PriceMonitorScheduler:
             logger.info("ASIN discovery pipeline launched")
 
         while self.running:
+            # Lazy reconnect: ensure Kafka/ES are available before each cycle
+            await self._ensure_connections()
+
             try:
                 await self.run_price_check()
             except Exception as e:
@@ -299,6 +302,33 @@ class PriceMonitorScheduler:
             # Wait for next check
             logger.info(f"💤 Sleeping for {self.check_interval} seconds...")
             await asyncio.sleep(self.check_interval)
+
+    async def _ensure_connections(self):
+        """Lazy reconnect for Kafka producers and Elasticsearch.
+        Called before each price-check cycle so that a failed init
+        at startup doesn't silently disable the pipeline forever."""
+        # Kafka producers
+        if not price_producer.producer:
+            try:
+                await price_producer.start()
+                logger.info("🔄 Kafka price producer reconnected")
+            except Exception as e:
+                logger.warning(f"Kafka price producer still unavailable: {e}")
+
+        if not deal_producer.producer:
+            try:
+                await deal_producer.start()
+                logger.info("🔄 Kafka deal producer reconnected")
+            except Exception as e:
+                logger.warning(f"Kafka deal producer still unavailable: {e}")
+
+        # Elasticsearch
+        if not es_service.client:
+            try:
+                await es_service.connect()
+                logger.info("🔄 Elasticsearch reconnected")
+            except Exception as e:
+                logger.warning(f"Elasticsearch still unavailable: {e}")
 
     async def run_price_check(self) -> Dict[str, Any]:
         """

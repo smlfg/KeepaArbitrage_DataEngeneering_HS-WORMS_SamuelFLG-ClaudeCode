@@ -15,13 +15,12 @@ if [ -n "$TOKEN_INFO" ]; then
 import sys, json
 try:
     d = json.load(sys.stdin)
-    tokens = d.get('keepa_tokens', d.get('token_status', {}))
-    if isinstance(tokens, dict):
-        print(f\"Tokens available: {tokens.get('tokens_available', '?')}\")
-        print(f\"Tokens/min: {tokens.get('tokens_per_minute', '?')}\")
-        print(f\"Total consumed: {tokens.get('total_tokens_consumed', '?')}\")
-    else:
-        print(f'Token info: {tokens}')
+    print(f\"Tokens available: {d.get('tokens_available', '?')}\")
+    print(f\"Watches: {d.get('watches_count', '?')}\")
+    print(f\"Status: {d.get('status', '?')}\")
+    print(f\"Elasticsearch: {d.get('elasticsearch', '?')}\")
+    print(f\"Database: {d.get('database', '?')}\")
+    print(f\"Kafka: {d.get('kafka', '?')}\")
 except Exception as e:
     print(f'Parse error: {e}')
 "
@@ -30,7 +29,8 @@ else
 fi
 
 # Check logs for token-related warnings
-TOKEN_WARNS=$(docker-compose logs --since 20m app 2>/dev/null | grep -ci "token\|rate.limit\|429" || echo 0)
+TOKEN_WARNS=$(docker-compose logs --since 20m app 2>/dev/null | grep -ci "token\|rate.limit\|429" || true)
+TOKEN_WARNS=${TOKEN_WARNS:-0}
 echo "Token/Rate-Limit Warnings (20 Min): $TOKEN_WARNS"
 
 echo ""

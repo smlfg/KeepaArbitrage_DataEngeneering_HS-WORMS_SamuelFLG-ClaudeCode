@@ -24,8 +24,9 @@ Schritt-fuer-Schritt Erklaerung: Wie fliesst ein Deal von der Keepa API bis in E
    ▼
 🏷️ Keyboard-Filter + Layout-Erkennung
    │
-   ├──▼ elasticsearch_service.index_deals()    → "keepa-deals"
-   ├──▼ _calculate_arbitrage()                 → "keepa-arbitrage"
+   ├──▼ elasticsearch_service.index_deals()    → "keeper-deals"
+   ├──▼ _calculate_arbitrage()                 → in-memory (logged, not indexed)
+   ├──▼ _log_token_metric()                    → "keeper-metrics"
    └──▼ KafkaProducer.publish_deals()          → optional
 ```
 
@@ -50,6 +51,30 @@ self.scheduler.add_job(
 ```
 
 **Analogie:** Ein Wecker der sagt "Hey, schau mal ob es neue Deals gibt!"
+
+---
+
+## Phase 0b: Lazy Reconnect (`_ensure_connections`)
+
+**Datei:** `src/scheduler.py:306-330`
+
+Vor jedem Preis-Check-Zyklus prueft der Scheduler ob alle Verbindungen stehen. Falls beim Container-Startup Kafka oder ES noch nicht bereit waren (Race Condition), wird hier nachverbunden.
+
+```python
+# scheduler.py:306-330
+async def _ensure_connections(self):
+    """Lazy reconnect for Kafka producers and Elasticsearch.
+    Called before each price-check cycle so that a failed init
+    at startup doesn't silently disable the pipeline forever."""
+    if not price_producer.producer:
+        await price_producer.start()      # Kafka Price Producer
+    if not deal_producer.producer:
+        await deal_producer.start()       # Kafka Deal Producer
+    if not es_service.client:
+        await es_service.connect()        # Elasticsearch
+```
+
+**Warum das wichtig ist:** Docker startet alle Container quasi gleichzeitig. Der Scheduler kann bereit sein bevor Kafka/ES hochgefahren sind. Ohne `_ensure_connections()` bleibt die Pipeline nach einem fehlgeschlagenen Startup dauerhaft deaktiviert — der 2-Tage-Ausfall am 25. Feb wurde genau durch dieses Pattern verursacht.
 
 ---
 
@@ -271,7 +296,7 @@ result = await self.elasticsearch_service.index_deals(valid_deals)
 
 ```python
 # elasticsearch_service.py:41-92 — create_index()
-# Falls "keepa-deals" nicht existiert → erstellen mit Mapping:
+# Falls "keeper-deals" nicht existiert → erstellen mit Mapping:
 {
     "asin":             "keyword",    # exakte Suche
     "title":            "text",       # Volltextsuche
@@ -359,7 +384,7 @@ MIN_MARGIN = 15.0   # Minimum 15€ Gewinn
 ```python
 # scheduler.py:784-861
 # 1. Alle Deals aus ES lesen (max 1000)
-response = await es.client.search(index="keepa-deals", body={
+response = await es.client.search(index="keeper-deals", body={
     "size": 1000,
     "query": {"bool": {"filter": [{"exists": {"field": "current_price"}}]}}
 })
@@ -394,7 +419,7 @@ if margin >= MIN_MARGIN:
 
 ### Ergebnis
 
-Opportunities werden in einen separaten ES-Index `keepa-arbitrage` geschrieben (`elasticsearch_service.py:364-450`). Document-ID = `{asin}_{buy_domain}_{sell_domain}` → automatisches Upsert.
+Opportunities werden berechnet und via Pipeline-Logger geloggt (`log_arbitrage()`). Es gibt keinen separaten ES-Index fuer Arbitrage — die Ergebnisse werden als strukturierte Log-Events erfasst.
 
 ---
 
@@ -415,6 +440,33 @@ except Exception as e:
 ```
 
 **Wichtig:** Wenn Kafka nicht laeuft → nur ein Warning, kein Crash. Elasticsearch ist der primaere Datenspeicher fuer Deals.
+
+---
+
+## Phase 7: Token Metrics (Observability)
+
+**Dateien:** `src/services/keepa_api.py:273-297`, `src/services/keepa_client.py:128-152`
+
+Parallel zu den Phasen 2-6 schreibt jeder Keepa API-Call ein Metrik-Dokument in den `keeper-metrics` ES-Index:
+
+```
+Keepa API Call (Phase 2)
+    │
+    ├──▼ Response verarbeiten (Phasen 3-6)
+    │
+    └──▼ _log_token_metric()
+            │
+            ▼
+        keeper-metrics Index
+            │
+            ▼
+        Kibana "Token Budget" Dashboard
+        - Tokens Left (Area)
+        - Consumed/Hour (Bar)
+        - Response Time (Line)
+```
+
+**Wichtig:** Das Metrik-Schreiben ist fire-and-forget (`try/except pass`). Wenn ES kurz nicht erreichbar ist, verlieren wir Metriken — aber der Pipeline-Zyklus laeuft weiter.
 
 ---
 

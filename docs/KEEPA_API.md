@@ -165,6 +165,51 @@ await self._token_bucket.wait_for_tokens(cost=15, max_wait=120.0)
 
 ---
 
+## Token Metrics (Observability)
+
+Seit dem PriceCheck-Ausfall (25. Feb 2026) loggen beide Keepa-Clients nach jedem API-Call ein Metrik-Dokument in den `keeper-metrics` ES-Index.
+
+### Wie es funktioniert
+
+```python
+# In keepa_api.py (KeepaAPIClient) und keepa_client.py (KeepaClient)
+async def _log_token_metric(self, operation, tokens_consumed, response_time_ms, ...):
+    es = self._get_es_service()  # Lazy Import, vermeidet zirkulaere Abhaengigkeiten
+    metric = {
+        "timestamp":       datetime.utcnow().isoformat(),
+        "operation":       operation,          # "query", "search", etc.
+        "tokens_consumed": tokens_consumed,    # Kosten dieses Calls
+        "tokens_left":     tokens_left,        # Verbleibendes Budget
+        "refill_rate":     20,                 # Tokens/Minute
+        "response_time_ms": 4441,             # Keepa Antwortzeit
+        "domain":          "DE",              # Marktplatz
+        "success":         True,
+    }
+    try:
+        await es.index_token_metric(metric)
+    except Exception:
+        pass  # Metriken sind optional — duerfen den API-Call nie blockieren
+```
+
+### Warum in beiden Clients?
+
+| Client | Datei | Genutzt von |
+|--------|-------|-------------|
+| `KeepaAPIClient` | `src/services/keepa_api.py` | Scheduler (Deal-Collector) |
+| `KeepaClient` | `src/services/keepa_client.py` | Direkte API-Aufrufe, Tests |
+
+Beide schreiben in denselben ES-Index `keeper-metrics`. Das Kibana Dashboard "Token Budget" aggregiert beide.
+
+### Kibana Dashboard
+
+Visualisiert im Dashboard "Token Budget":
+- **Tokens Left** (Area Chart) — Budget-Verlauf ueber Zeit
+- **Consumed/Hour** (Bar Chart) — Verbrauch pro Stunde
+- **Cost by Operation** (Pie Chart) — Welche Operationen kosten am meisten
+- **Response Time** (Line Chart) — Keepa API Antwortzeiten
+
+---
+
 ## Fehlerbehandlung
 
 | Exception | Bedeutung | Was tun |

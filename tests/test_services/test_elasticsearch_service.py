@@ -67,7 +67,7 @@ class TestCreateIndices:
 
         await es_service._create_indices()
 
-        assert es_service.client.indices.create.await_count == 2
+        assert es_service.client.indices.create.await_count == 3
 
     @pytest.mark.asyncio
     async def test_skips_existing_indices(self, es_service):

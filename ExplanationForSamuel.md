@@ -100,6 +100,7 @@ Jeden 4. Zyklus (= ~1x pro Tag) werden zusätzlich **Deal Reports** generiert un
 - **Elasticsearch + Kibana** — Such-Engine für Deals. Volltextsuche, Facetten, Dashboards. Kibana auf Port 5601.
 - **Keepa API** — Die einzige zuverlässige Quelle für Amazon-Preishistorien. Hat ein Token-System (20 Tokens/Minute), daher der Token Bucket.
 - **FastAPI** — REST-API für Frontend/Integrationen. Async, schnell, automatische API-Docs.
+- **APScheduler statt Airflow** — Airflow bringt eigene Infrastruktur mit (Webserver, Metadata-DB, Celery-Workers, eigener Scheduler-Daemon). Wir haben genau 2 periodische Jobs in einem Container. APScheduler laeuft in-process, braucht null Extra-Infra und kann alles was wir brauchen: Cron-Trigger, Intervall-Trigger, Misfire-Handling. Airflow lohnt sich erst bei 10+ DAGs mit komplexen Abhaengigkeiten und mehreren Teams.
 
 ## Was gerade der Stand ist
 

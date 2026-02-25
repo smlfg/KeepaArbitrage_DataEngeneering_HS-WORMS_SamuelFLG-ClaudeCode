@@ -28,8 +28,10 @@ echo "## 1. System Health" >> "$REPORT"
 echo "" >> "$REPORT"
 
 # Docker containers
-CONTAINERS_UP=$(docker-compose ps 2>/dev/null | grep -c "Up\|running" || echo 0)
-CONTAINERS_TOTAL=$(docker-compose ps 2>/dev/null | grep -cE "app|db|kafka|zookeeper|elastic" || echo 0)
+CONTAINERS_UP=$(docker ps --filter "label=com.docker.compose.project" --format "{{.Status}}" 2>/dev/null | grep -ci "up" || true)
+CONTAINERS_UP=${CONTAINERS_UP:-0}
+CONTAINERS_TOTAL=$(docker-compose ps --services 2>/dev/null | wc -l | tr -d ' ')
+CONTAINERS_TOTAL=${CONTAINERS_TOTAL:-0}
 echo "- Container: **${CONTAINERS_UP}/${CONTAINERS_TOTAL}** laufen" >> "$REPORT"
 
 # API health
@@ -45,7 +47,8 @@ ES_STATUS=$(curl -s "http://localhost:9200/_cluster/health" 2>/dev/null | python
 echo "- Elasticsearch: **$ES_STATUS**" >> "$REPORT"
 
 # Kafka
-KAFKA_UP=$(docker-compose ps kafka 2>/dev/null | grep -c "Up\|running" || echo 0)
+KAFKA_UP=$(docker-compose ps kafka 2>/dev/null | grep -ci "up\|running" || true)
+KAFKA_UP=${KAFKA_UP:-0}
 echo "- Kafka: **$([ "$KAFKA_UP" -gt 0 ] && echo 'Running' || echo 'DOWN')**" >> "$REPORT"
 echo "" >> "$REPORT"
 
@@ -76,7 +79,9 @@ docker-compose exec -T db psql -U postgres -d keeper -t -c "
   FROM collected_deals
   WHERE collected_at > NOW() - INTERVAL '8 hours';
 " 2>/dev/null | while IFS='|' read -r price discount rating score; do
-    echo "- Durchschnittspreis: **$(echo $price | tr -d ' ')** EUR" >> "$REPORT"
+    price=$(echo "$price" | tr -d ' ')
+    [ -z "$price" ] && continue
+    echo "- Durchschnittspreis: **${price}** EUR" >> "$REPORT"
     echo "- Durchschnitts-Rabatt: **$(echo $discount | tr -d ' ')%**" >> "$REPORT"
     echo "- Durchschnitts-Rating: **$(echo $rating | tr -d ' ')**/5" >> "$REPORT"
     echo "- Durchschnitts-Score: **$(echo $score | tr -d ' ')**/100" >> "$REPORT"
@@ -166,9 +171,12 @@ echo "---" >> "$REPORT"
 echo "## 5. Fehler-Zusammenfassung" >> "$REPORT"
 echo "" >> "$REPORT"
 
-ERROR_COUNT=$(docker-compose logs --since 8h app 2>/dev/null | grep -ci "error\|exception\|traceback" || echo 0)
-WARN_COUNT=$(docker-compose logs --since 8h app 2>/dev/null | grep -ci "warning\|warn" || echo 0)
-TOKEN_ISSUES=$(docker-compose logs --since 8h app 2>/dev/null | grep -ci "token\|rate.limit" || echo 0)
+ERROR_COUNT=$(docker-compose logs --since 8h app 2>/dev/null | grep -ci "error\|exception\|traceback" || true)
+ERROR_COUNT=${ERROR_COUNT:-0}
+WARN_COUNT=$(docker-compose logs --since 8h app 2>/dev/null | grep -ci "warning\|warn" || true)
+WARN_COUNT=${WARN_COUNT:-0}
+TOKEN_ISSUES=$(docker-compose logs --since 8h app 2>/dev/null | grep -ci "token\|rate.limit" || true)
+TOKEN_ISSUES=${TOKEN_ISSUES:-0}
 
 echo "- Errors (8h): **$ERROR_COUNT**" >> "$REPORT"
 echo "- Warnings (8h): **$WARN_COUNT**" >> "$REPORT"
@@ -225,6 +233,17 @@ echo "## 8. Empfehlungen fuer heute" >> "$REPORT"
 echo "" >> "$REPORT"
 
 RECOMMENDATIONS=0
+
+# Dead-Man's Switch: Warnung wenn Nightwatch selbst ausgefallen war
+HEALTH_LOG="$REPORTS/01_health.log"
+if [ -f "$HEALTH_LOG" ]; then
+    LAST_LOG_AGE=$(( $(date +%s) - $(stat -c %Y "$HEALTH_LOG") ))
+    LAST_LOG_HOURS=$(( LAST_LOG_AGE / 3600 ))
+    if [ "$LAST_LOG_HOURS" -ge 12 ]; then
+        echo "$((RECOMMENDATIONS + 1)). **WARNUNG: Nightwatch war ${LAST_LOG_HOURS}h offline!** Health-Log zuletzt aktualisiert: $(stat -c %y "$HEALTH_LOG" | cut -d. -f1)" >> "$REPORT"
+        RECOMMENDATIONS=$((RECOMMENDATIONS + 1))
+    fi
+fi
 
 if [ "$API_CODE" != "200" ]; then
     echo "1. **API ist down** — \`docker-compose restart app\`" >> "$REPORT"

@@ -108,6 +108,42 @@ Speichert gesammelte Deals mit Scoring.
   - Umlaute: "Geraet" matcht "Gerät" (via asciifolding)
 - **`suggest` (completion)** — fuer Autocomplete/Type-Ahead in Kibana
 
+### 3. `keeper-metrics` — Token Usage Tracking
+
+Speichert nach jedem Keepa API-Call ein Metrik-Dokument fuer Token-Verbrauchs-Monitoring.
+
+**Datei:** `src/services/elasticsearch_service.py:93-113`
+
+```json
+{
+  "mappings": {
+    "properties": {
+      "timestamp":        { "type": "date" },
+      "operation":        { "type": "keyword" },
+      "tokens_consumed":  { "type": "integer" },
+      "tokens_left":      { "type": "integer" },
+      "refill_rate":      { "type": "integer" },
+      "refill_in":        { "type": "integer" },
+      "response_time_ms": { "type": "integer" },
+      "asin_count":       { "type": "integer" },
+      "domain":           { "type": "keyword" },
+      "success":          { "type": "boolean" },
+      "error":            { "type": "text" }
+    }
+  },
+  "settings": {
+    "number_of_shards": 1,
+    "number_of_replicas": 0
+  }
+}
+```
+
+**Besonderheiten:**
+- Indexiert von `keepa_api.py` und `keepa_client.py` nach jedem API-Call via `_log_token_metric()`
+- Lazy Import von `elasticsearch_service` um zirkulaere Abhaengigkeiten zu vermeiden
+- `try/except pass` beim Schreiben — Metriken sind optional, duerfen den API-Call nie blockieren
+- Kibana Dashboard "Token Budget" visualisiert: Tokens Left (Area), Consumed/Hour (Bar), Cost by Operation (Pie), Response Time (Line)
+
 ---
 
 ## Service-Klasse
@@ -120,6 +156,7 @@ class ElasticsearchService:
         self.client: Optional[AsyncElasticsearch] = None
         self.prices_index = "keeper-prices"      # aus config
         self.deals_index = "keeper-deals"         # aus config
+        self.metrics_index = "keeper-metrics"     # Token-Verbrauch
 
     async def connect(self):
         """Verbindung + automatische Index-Erstellung"""
@@ -142,6 +179,7 @@ class ElasticsearchService:
 |---------|-----|-----------------|
 | `index_price_update(data)` | Einzelnes Preis-Dokument indexieren | Scheduler: nach jedem Preis-Check |
 | `index_deal_update(data)` | Einzelnes Deal-Dokument indexieren | Deal-Collector: pro Deal |
+| `index_token_metric(data)` | Token-Verbrauchs-Metrik indexieren | keepa_api.py / keepa_client.py: nach jedem API-Call |
 
 Beide nutzen `await self.client.index(index=..., document=...)` — kein Bulk!
 Fuer hoehere Durchsaetze: Bulk API waere besser, aber bei 10-50 Docs/Zyklus reicht Einzelindexierung.
@@ -230,6 +268,14 @@ es_service.index_deal_update({asin, title, discount, score, ...})
 keeper-deals Index
     ↓
 Kibana Dashboard / API get_deal_aggregations()
+
+Keepa API Call (keepa_api.py / keepa_client.py)
+    ↓
+es_service.index_token_metric({operation, tokens_consumed, tokens_left, ...})
+    ↓
+keeper-metrics Index
+    ↓
+Kibana Dashboard "Token Budget"
 ```
 
 ---
@@ -334,6 +380,7 @@ In `src/config.py`:
 elasticsearch_url: str = "http://localhost:9200"
 elasticsearch_index_prices: str = "keeper-prices"
 elasticsearch_index_deals: str = "keeper-deals"
+# keeper-metrics ist hardcoded in ElasticsearchService.__init__()
 ```
 
 ---

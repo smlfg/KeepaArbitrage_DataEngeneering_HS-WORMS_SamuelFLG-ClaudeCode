@@ -2,7 +2,7 @@
 
 ## Summary
 
-The KeepaPreisSystem is an Amazon QWERTZ keyboard price monitoring and deal-finding pipeline built for a Data Engineering exam project. It tracks keyboard prices across 5 EU markets (DE, UK, FR, IT, ES) using the Keepa API, streams events through Kafka, indexes them in Elasticsearch, persists to PostgreSQL, and alerts users via email/Telegram/Discord. The system runs as a Docker stack (7 containers) with a background scheduler, two Kafka consumer groups, and a suite of nightwatch monitoring scripts. After stabilization on Feb 20, 2026 -- fixing a crashed systemd alert service and removing an unused kafka-connect container -- **the pipeline runs clean: all 7 containers healthy, Kafka offsets advancing, ES indexing OK, scheduled alert checks working.**
+The KeepaPreisSystem is an Amazon QWERTZ keyboard price monitoring and deal-finding pipeline built for a Data Engineering exam project. It tracks keyboard prices across 5 EU markets (DE, UK, FR, IT, ES) using the Keepa API, streams events through Kafka, indexes them in Elasticsearch (3 indices: keeper-prices, keeper-deals, keeper-metrics), persists to PostgreSQL, and alerts users via email/Telegram/Discord. The system runs as a Docker stack (7 containers) with a background scheduler, two Kafka consumer groups, and a suite of nightwatch monitoring scripts. The systemd scheduler has been disabled — only the Docker scheduler runs. A cron-based watchdog monitors the Docker containers. After stabilization on Feb 20-25, 2026 -- removing an unused kafka-connect container, adding lazy reconnect (`_ensure_connections()`), and token usage metrics -- **the pipeline runs clean: all 7 containers healthy, Kafka offsets advancing, ES indexing OK, scheduled alert checks working.**
 
 Completion level: **8/10** -- a significant upgrade from the initial 6/10. The Kafka/ES pipeline, structured logging, nightwatch monitoring, ASIN discovery script, and operational tooling push this into "demo-ready for exam" territory.
 
@@ -219,7 +219,7 @@ KeepaProjectsforDataEngeneering3BranchesMerge/     (83 files, 19 directories)
 │   └── conftest.py                        # Fixtures
 ├── kibana/                                # Kibana auto-load dashboards
 │   ├── setup-kibana.sh                    # Init script (wait + import)
-│   └── saved_objects.ndjson               # 14 saved objects (data views + dashboards)
+│   └── saved_objects.ndjson               # 29 saved objects (3 data views + dashboards + visualizations)
 ├── docker-compose.yml                     # 7+1 container stack definition
 ├── Dockerfile                             # Python 3.11-slim image
 ├── requirements.txt                       # Python dependencies
@@ -336,7 +336,7 @@ Every pipeline stage emits JSON events to stdout via structlog:
 
 Stages: `keepa_api` -> `parser` -> `filter` -> `kafka_producer` -> `kafka_consumer` -> `es_index` -> `arbitrage`
 
-These events are captured by Docker and systemd journal, making the nightwatch scripts possible. You can grep for `pipeline_event` to trace any data point through the entire pipeline.
+These events are captured by Docker logs, making the nightwatch scripts possible. You can grep for `pipeline_event` to trace any data point through the entire pipeline.
 
 ### 4.5 Elasticsearch Service (`elasticsearch_service.py`) -- Search & Analytics
 
@@ -400,7 +400,7 @@ collected_deals (standalone -- raw deal snapshots)
 
 **`cleanup_old_logs.py`** -- ES retention cleanup (deletes documents > 10 days old)
 - Can run via cron or manually
-- Targets `keepa-deals` and `keepa-arbitrage` indices
+- Targets `keeper-deals` and `keeper-prices` indices
 
 ### 5.3 ASIN Discovery Script (`discover_eu_qwertz_asins.py`)
 
@@ -601,7 +601,7 @@ This project demonstrates a specific skillset:
 - **Token cost optimization** -- 89% savings through intelligent routing
 - **Delegation chain architecture** -- Gemini researches -> facts -> OpenCode implements
 - **Iterative error resolution** -- 109 errors, 80 successes, only 3 reverts in one session
-- **Operational awareness** -- nightwatch, morning reports, systemd timers
+- **Operational awareness** -- nightwatch, morning reports, Docker watchdog
 
 Not the mason -- the site manager.
 
@@ -616,7 +616,7 @@ Not the mason -- the site manager.
 | Core Pipeline | 7/10 | 9/10 | Kafka + ES fully integrated, deal collector runs continuously |
 | Code Quality | 4/10 | 7/10 | Structured logging, type-safe configs, cleaned imports |
 | Tests | 3/10 | 9/10 | 266/266 passing, API + agent + service tests (22.02.2026) |
-| Deployment | 7/10 | 9/10 | Stable 7-container stack, systemd services, nightwatch |
+| Deployment | 7/10 | 9/10 | Stable 7-container Docker stack + cron watchdog, nightwatch |
 | Monitoring | 0/10 | 8/10 | 11 nightwatch scripts, morning reports, pipeline logging |
 | Documentation | 5/10 | 8/10 | Architecture docs, exam prep, this file |
 
@@ -877,7 +877,7 @@ Basierend auf der Exploration durch 3 parallele Agents (Struktur, Pipeline, Dock
 | FastAPI REST API | READY | 17 Endpoints, Pydantic-Validation, Error Handling |
 | PostgreSQL | READY | 8 async SQLAlchemy Models, CRUD, auto-init |
 | Kafka | READY | 2 Topics, 2 Consumer Groups, auto-create |
-| Elasticsearch | READY | 2 Indices, German Stemming, Aggregationen |
+| Elasticsearch | READY | 3 Indices (prices, deals, metrics), German Stemming, Aggregationen |
 | Keepa Integration | READY | Token Bucket, CSV-Parsing, Fallback-Strategie |
 | Docker Stack | READY | 7 Container, Dependencies, Volume Persistence |
 | Tests | READY | 266 passed, 0 failed (Stand: 22.02.2026) |
@@ -972,6 +972,11 @@ Basierend auf der Exploration durch 3 parallele Agents (Struktur, Pipeline, Dock
 |  | price_change_percent,   |  | discount_percent, rating,  | |
 |  | domain, timestamp       |  | deal_score, category       | |
 |  +-------------------------+  +----------------------------+ |
+|  +----------------------------+                              |
+|  | keeper-metrics (Index)     |                              |
+|  | operation, tokens_consumed,|                              |
+|  | tokens_left, response_time |                              |
+|  +----------------------------+                              |
 |                                                              |
 |  Aggregationen: avg_price, discount_distribution, top_deals  |
 +------------------------------+-------------------------------+
@@ -1045,7 +1050,7 @@ Basierend auf der Exploration durch 3 parallele Agents (Struktur, Pipeline, Dock
                           |
                           v
                     Elasticsearch
-                    (2 Indices)
+                    (3 Indices)
                           |
                           |
                           v
@@ -1174,7 +1179,7 @@ Beim `docker-compose up -d` startet ein einmaliger Init-Container (`kibana-setup
 ```
 kibana/
 ├── setup-kibana.sh          # Wartet auf Kibana, importiert NDJSON
-└── saved_objects.ndjson     # 14 Saved Objects (2 Data Views + 10 Lens + 2 Dashboards)
+└── saved_objects.ndjson     # 29 Saved Objects (3 Data Views + 14 Lens + 3 Markdown + 2 Search + 1 Vega + 4 Dashboards)
 
 docker-compose.yml
 └── kibana-setup             # curlimages/curl:8.5.0, einmal-Job, restart: "no"
@@ -1270,11 +1275,14 @@ Wenn wir spaeter Live-Status wollen, aendern wir nur die `data` section:
 ### Saved Objects (aktualisiert)
 
 ```
-kibana/saved_objects.ndjson — 16 Objekte total:
-  2x Data Views (keeper-deals, keeper-prices)
- 10x Lens Visualisierungen (Deals + Prices)
-  1x Vega Visualization (Pipeline Monitor)     <-- NEU
-  3x Dashboards (Deal Overview, Price Monitor, Pipeline Monitor)  <-- +1 NEU
+kibana/saved_objects.ndjson — 29 Objekte total:
+  3x Data Views (keeper-deals, keeper-prices, keeper-metrics)
+ 14x Lens Visualisierungen (Deals + Prices + Token Metrics)
+  3x Markdown Visualisierungen (Dashboard-Beschreibungen)
+  2x Saved Searches (Discover-Views)
+  1x Vega Visualization (Pipeline Monitor)
+  4x Dashboards (Deal Overview, Price Monitor, Pipeline Monitor, Token Budget)
+  2x sonstige (Index Patterns, etc.)
 ```
 
 ---
